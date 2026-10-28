@@ -8,7 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Rooms } from './src/rooms.js';
 import { Health } from './src/preflight.js';
-import { AGENTS } from './src/prompts.js';
+import { AGENTS, latestSite } from './src/prompts.js';
+import { shipConfig } from './src/github.js';
 
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 3000);
@@ -60,6 +61,7 @@ function meta() {
     agents: Object.fromEntries(Object.values(AGENTS).map((a) => [a.id, { name: a.name, role: a.role }])),
     health: health.state,
     rooms: rooms.list(),
+    ship: (({ enabled, repo }) => ({ enabled, repo }))(shipConfig()),
   };
 }
 
@@ -131,6 +133,7 @@ const routes = [
   ['POST', /^\/api\/rooms\/([\w-]+)\/continue$/, (req, id) => rooms.get(id).continue()],
   ['POST', /^\/api\/rooms\/([\w-]+)\/stop$/, (req, id) => rooms.get(id).stop()],
   ['POST', /^\/api\/rooms\/([\w-]+)\/retry$/, async (req, id) => rooms.get(id).retry(String((await readJson(req)).messageId || ''))],
+  ['POST', /^\/api\/rooms\/([\w-]+)\/ship$/, (req, id) => rooms.get(id).ship()],
   ['POST', /^\/api\/recheck$/, () => {
     health.check();
   }],
@@ -151,6 +154,30 @@ const server = http.createServer(async (req, res) => {
     clients.add(res);
     req.on('close', () => clients.delete(res));
     return;
+  }
+
+  // Website preview, served with its own locked-down policy: its scripts run, but it gets an
+  // opaque origin and no network, so it can't reach the room's API or anything else.
+  const previewMatch = req.method === 'GET' && url.pathname.match(/^\/preview\/([\w-]+)$/);
+  if (previewMatch) {
+    let site = null;
+    try {
+      site = latestSite(rooms.get(previewMatch[1]).data);
+    } catch {
+      site = null;
+    }
+    // A sandboxed page has an opaque origin, so 'self' would never match: name the app's origin.
+    // (The Host header was already checked by allowed().)
+    const appOrigin = `http://${req.headers.host}`;
+    res.writeHead(site ? 200 : 404, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy':
+        `sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors ${appOrigin}`,
+    });
+    return res.end(site ? site.html : '<p style="font:16px system-ui;color:#888">No website yet.</p>');
   }
 
   const exportMatch = req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/([\w-]+)\/export$/);

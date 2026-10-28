@@ -6,6 +6,10 @@ anything you add (a follow-up, a changed requirement) shapes the next replies.
 
 It runs locally and calls the real Claude Code and Codex CLIs with your own accounts.
 
+Optional: ask for a website and take it **from prompt to live site**: Claude builds it, Codex reviews it,
+and when you say so the room pushes it to GitHub, where GitHub Actions tests it and deploys it to GitHub Pages
+([details](#optional-build-and-ship-a-small-website)).
+
 - [Quick start (Docker)](#quick-start-docker): recommended, same setup on macOS, Windows and Linux
 - [Run without Docker](#run-without-docker)
 - [Using the room](#using-the-room)
@@ -65,7 +69,7 @@ Pick one. The sign-in is stored in a Docker volume (`agent-room_codex-home`) and
 Use the prebuilt image (Intel/AMD and Apple Silicon):
 
 ```bash
-AGENT_ROOM_IMAGE=iqbal508/agent-room:0.1.0 docker compose up -d --no-build
+AGENT_ROOM_IMAGE=iqbal508/agent-room:0.2.0 docker compose up -d --no-build
 ```
 
 Or build it yourself from this source:
@@ -74,8 +78,8 @@ Or build it yourself from this source:
 docker compose up -d --build
 ```
 
-(To use the prebuilt image for step 2 too, put `AGENT_ROOM_IMAGE=iqbal508/agent-room:0.1.0` in `.env`
-first. On Windows PowerShell, set it with `$env:AGENT_ROOM_IMAGE="iqbal508/agent-room:0.1.0"`.)
+(To use the prebuilt image for step 2 too, put `AGENT_ROOM_IMAGE=iqbal508/agent-room:0.2.0` in `.env`
+first. On Windows PowerShell, set it with `$env:AGENT_ROOM_IMAGE="iqbal508/agent-room:0.2.0"`.)
 
 Open **http://localhost:3000**. On start, the room checks both agents with one tiny real call; the
 sidebar shows each connection, and anything that isn't connected comes with the exact fix.
@@ -111,6 +115,32 @@ Each agent has a role so the conversation has some friction: Claude is the **bui
 into a concrete plan), Codex is the **skeptic** (finds the weak spot and cuts scope). Disagreement
 isn't scripted; both are simply told to engage with each other's points and not agree just to be polite.
 
+## Optional: build and ship a small website
+
+Ask for a website (e.g. *"Build me a portfolio website for a beginner developer. Claude builds it, Codex reviews it."*):
+
+- **Claude writes it** as one self-contained HTML file. The code is folded into a chip in the chat, and
+  the site runs in a **Preview** panel next to the chat.
+- **Codex reviews it**: it judges the newest version and lists the problems it finds, or says "Ready to ship."
+  Ask Claude to fix them as often as you like.
+- **Ship** (only when set up, see [ship-template/README.md](ship-template/README.md)): press the Ship button, or
+  say it in the chat (*"Looks good. Push it to GitHub and make it live."*). The room commits the site to a
+  GitHub repo, GitHub Actions runs quality checks and, only if they pass, deploys to GitHub Pages. The
+  room shows each step and the live link. The repo can start empty: the first ship adds the checks and the deploy workflow.
+
+Example run (the one in the demo video), three messages from the person:
+
+1. *"Build a simple portfolio website for a beginner developer. Mark anything I need to fill in. Claude builds, Codex reviews."*
+2. *"Fix everything Codex found."* (repeat until Codex says it's ready)
+3. *"Looks good. Push it to GitHub and make it live."*
+
+Result: https://iqbal-ghazali.github.io/dev-portfolio/ (repo: https://github.com/Iqbal-ghazali/dev-portfolio).
+
+Only a person can start a ship: the button, or a message from you that asks for it (Claude confirms, then
+the room ships). The agents never see the GitHub token and can't deploy anything on their own.
+The preview runs sandboxed: its scripts get their own origin and no network access, so a generated
+page can't reach the room's API.
+
 ## Configuration
 
 Set these in `.env`.
@@ -125,6 +155,10 @@ Set these in `.env`.
 | `AGENT_TIMEOUT_SECONDS` | `150` | Give up on a reply after this long |
 | `SKIP_PING` | | `1` = start-screen check only confirms the CLIs exist (no real call) |
 | `AGENT_ROOM_PORT` | `3000` | Host port for Docker |
+| `GITHUB_TOKEN` | | Fine-grained token for the ship repo only (enables **Ship**) |
+| `GITHUB_REPO` | | `owner/name` of the ship repo |
+| `GITHUB_BRANCH` | `main` | Branch to commit to |
+| `GITHUB_SITE_PATH` | `site/index.html` | Where the website is committed |
 | `DATA_DIR` | `./data` | Where rooms and logs are saved (Docker: the `agent-room_data` volume) |
 
 ## Troubleshooting

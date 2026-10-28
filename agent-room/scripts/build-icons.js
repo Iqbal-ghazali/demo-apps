@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const ICONS = [
   'plus', 'panel-left', 'trash-2', 'download', 'rotate-cw', 'square', 'arrow-up',
   'sun', 'moon', 'refresh-cw', 'circle-alert', 'message-square',
+  'file-code', 'rocket', 'external-link', 'circle-check', 'circle-x', 'loader-circle', 'globe', 'minus',
 ];
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');

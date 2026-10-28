@@ -42,6 +42,20 @@ const markdown = (text) => DOMPurify.sanitize(marked.parse(text), { FORBID_TAGS:
 
 const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const oneLine = (text) => text.replace(/\s+/g, ' ').trim();
+const CODE = /```html[^\n]*\n([\s\S]*?)```/i;
+/** Split a reply into prose before/after its website code block. */
+function splitCode(text) {
+  const m = text.match(CODE);
+  if (!m) return { before: text, code: null, after: '' };
+  return { before: text.slice(0, m.index).trim(), code: m[1].trim(), after: text.slice(m.index + m[0].length).trim() };
+}
+/** Newest website in the room (mirrors the server's latestSite). */
+function latestSite(room) {
+  const withCode = room.messages.filter((m) => m.status === 'done' && m.role !== 'human' && m.role !== 'ship' && CODE.test(m.text || ''));
+  const last = withCode.at(-1);
+  return last ? { messageId: last.id, version: withCode.length, versions: new Map(withCode.map((m, i) => [m.id, i + 1])) } : null;
+}
+
 const roomFromHash = () => location.hash.match(/^#\/r\/([\w-]+)$/)?.[1] || null;
 
 const Icon = ({ name }) => html`<svg class="icon" aria-hidden="true"><use href=${`/icons.svg#${name}`} /></svg>`;
@@ -83,8 +97,44 @@ function Elapsed({ since, offset }) {
   return html`<span class="elapsed">${(Math.max(0, now + offset.current - since) / 1000).toFixed(1)}s</span>`;
 }
 
-function Message({ m, target, agents, offset, busy, onRetry }) {
-  const rendered = useMemo(() => (m.status === 'done' && m.role !== 'human' ? markdown(m.text) : null), [m.text, m.status]);
+function CodeChip({ code, version }) {
+  const [open, setOpen] = useState(false);
+  const lines = code.split('\n').length;
+  return html`<div class="code-chip">
+    <button class="code-head" onClick=${() => setOpen((o) => !o)}>
+      <${Icon} name="file-code" /><b>index.html</b><span>${lines} lines${version ? ` · v${version}` : ''}</span><em>${open ? 'Hide code' : 'View code'}</em>
+    </button>
+    ${open && html`<pre class="code"><code>${code}</code></pre>`}
+  </div>`;
+}
+
+const STEP_LABELS = { commit: 'Commit to GitHub', test: 'Tests · GitHub Actions', deploy: 'Deploy · GitHub Pages', live: 'Live' };
+const STEP_ICON = { done: 'circle-check', failed: 'circle-x', running: 'loader-circle', skipped: 'minus', waiting: 'minus' };
+
+function ShipCard({ m }) {
+  const steps = m.steps || {};
+  const links = m.links || {};
+  const failed = m.failed || m.status === 'error';
+  return html`<li class="msg ship">
+    <div class="ship-card ${failed ? 'failed' : m.status === 'done' ? 'shipped' : ''}">
+      <div class="ship-title"><${Icon} name="rocket" /> Shipping v${m.version} <span>→ ${m.repo}</span></div>
+      <ol class="ship-steps">
+        ${Object.entries(STEP_LABELS).map(([k, label]) => {
+          const st = steps[k] || (m.status === 'error' ? 'failed' : 'waiting');
+          const href = k === 'commit' ? links.commit : k === 'live' ? m.url : links.run;
+          return html`<li class="st-${st}"><${Icon} name=${STEP_ICON[st]} />${href && st !== 'waiting' ? html`<a href=${href} target="_blank" rel="noopener noreferrer">${label}</a>` : label}</li>`;
+        })}
+      </ol>
+      ${m.url && !failed && html`<a class="live-link" href=${m.url} target="_blank" rel="noopener noreferrer"><${Icon} name="globe" /> ${m.url.replace(/^https?:\/\//, '')}</a>`}
+      ${failed && html`<div class="ship-err">${m.summary || m.error}</div>`}
+    </div>
+  </li>`;
+}
+
+function Message({ m, target, agents, offset, busy, onRetry, version }) {
+  const parts = useMemo(() => (m.status === 'done' && m.role !== 'human' && m.role !== 'ship' ? splitCode(m.text) : null), [m.text, m.status]);
+  const rendered = useMemo(() => parts && { before: markdown(parts.before), after: parts.after ? markdown(parts.after) : '' }, [parts]);
+  if (m.role === 'ship') return html`<${ShipCard} m=${m} />`;
 
   if (m.role === 'human') {
     return html`<li class="msg human">
@@ -98,7 +148,13 @@ function Message({ m, target, agents, offset, busy, onRetry }) {
   // Keys make Preact swap the element when the status changes instead of patching it,
   // so nothing from the "thinking" state lingers inside the finished reply.
   let content;
-  if (m.status === 'done') content = html`<div key="done" class="md" dangerouslySetInnerHTML=${{ __html: rendered }} />`;
+  if (m.status === 'done') {
+    content = html`<div key="done">
+      <div class="md" dangerouslySetInnerHTML=${{ __html: rendered.before }} />
+      ${parts.code && html`<${CodeChip} code=${parts.code} version=${version} />`}
+      ${rendered.after && html`<div class="md" dangerouslySetInnerHTML=${{ __html: rendered.after }} />`}
+    </div>`;
+  }
   else if (m.status === 'pending') {
     content = html`<div key="pending" class="thinking"><span class="dots"><i /><i /><i /></span> thinking <${Elapsed} since=${m.startedAt} offset=${offset} /></div>`;
   } else if (m.status === 'error') {
@@ -113,7 +169,7 @@ function Message({ m, target, agents, offset, busy, onRetry }) {
     <div class="avatar ${m.role}">${INITIALS[m.role]}</div>
     <div class="msg-body">
       <div class="msg-head"><span class="msg-name">${NAMES[m.role]}</span><span class="role">${agents[m.role].role}</span></div>
-      ${target?.text && html`<div class="quote ${target.role}"><b>${NAMES[target.role]}</b><span>${oneLine(target.text)}</span></div>`}
+      ${target?.text && target.role !== 'ship' && html`<div class="quote ${target.role}"><b>${NAMES[target.role]}</b><span>${oneLine(splitCode(target.text).code ? `${splitCode(target.text).before} [website code]` : target.text)}</span></div>`}
       <div class="bubble">${content}</div>
       ${m.status === 'done' &&
       html`<div class="meta" title=${m.durationMs ? `Replied in ${(m.durationMs / 1000).toFixed(1)}s` : ''}>${m.model ? `${m.model} · ` : ''}${clock(m.at)}</div>`}
@@ -177,6 +233,7 @@ function Chat({ room, agents, offset, actions }) {
   const scroller = useRef();
   const pinned = useRef(true);
   const byId = useMemo(() => new Map(room.messages.map((m) => [m.id, m])), [room]);
+  const versions = useMemo(() => latestSite(room)?.versions || new Map(), [room]);
 
   useEffect(() => {
     pinned.current = true;
@@ -185,14 +242,14 @@ function Chat({ room, agents, offset, actions }) {
     if (pinned.current && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
   });
 
-  return html`
+  return html`<div class="chat-pane">
     <div class="scroller" ref=${scroller} onScroll=${(e) => {
       const el = e.currentTarget;
       pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
     }}>
       <div class="column">
         <ol class="messages">
-          ${room.messages.map((m) => html`<${Message} key=${m.id} m=${m} target=${byId.get(m.replyTo)} agents=${agents} offset=${offset} busy=${room.busy} onRetry=${actions.retry} />`)}
+          ${room.messages.map((m) => html`<${Message} key=${m.id} m=${m} target=${byId.get(m.replyTo)} agents=${agents} offset=${offset} busy=${room.busy} onRetry=${actions.retry} version=${versions.get(m.id)} />`)}
         </ol>
       </div>
     </div>
@@ -206,7 +263,22 @@ function Chat({ room, agents, offset, actions }) {
         onStop=${actions.stop}
         autofocus
       />
-    </div>`;
+    </div>
+  </div>`;
+}
+
+/** The newest website, running in a sandboxed frame (its own origin, no network). */
+function Preview({ room, site, ship, onShip }) {
+  const disabled = !ship.enabled || room.busy || room.shipping;
+  const title = !ship.enabled ? 'Set GITHUB_TOKEN and GITHUB_REPO in .env to enable shipping' : `Commit to ${ship.repo}, run tests, deploy to GitHub Pages`;
+  return html`<aside class="preview">
+    <div class="preview-bar">
+      <span class="pv-title"><${Icon} name="globe" /> Preview <em>v${site.version}</em></span>
+      <a class="icon-btn" href=${`/preview/${room.id}`} target="_blank" rel="noopener noreferrer" title="Open in a new tab" aria-label="Open preview in a new tab"><${Icon} name="external-link" /></a>
+      <button class="ship-btn" disabled=${disabled} onClick=${onShip} title=${title}><${Icon} name="rocket" /> ${room.shipping ? 'Shipping…' : 'Ship'}</button>
+    </div>
+    <iframe key=${site.messageId} src=${`/preview/${room.id}?v=${site.messageId}`} sandbox="allow-scripts" title="Website preview"></iframe>
+  </aside>`;
 }
 
 function Home({ meta, onCreate }) {
@@ -316,6 +388,7 @@ function App() {
     continue: () => attempt(() => api('POST', `/api/rooms/${activeId}/continue`)),
     stop: () => attempt(() => api('POST', `/api/rooms/${activeId}/stop`)),
     retry: (messageId) => attempt(() => api('POST', `/api/rooms/${activeId}/retry`, { messageId })),
+    ship: () => attempt(() => api('POST', `/api/rooms/${activeId}/ship`)),
     deleteRoom: (r) => {
       if (!confirm(`Delete "${r.title}"?`)) return;
       attempt(async () => {
@@ -339,6 +412,7 @@ function App() {
 
   if (!meta) return null;
   const room = activeId ? rooms[activeId] : null;
+  const site = room ? latestSite(room) : null;
 
   return html`<div class="shell ${collapsed ? 'collapsed' : ''}">
     <${Sidebar} meta=${meta} activeId=${activeId} theme=${theme} actions=${actions} />
@@ -350,7 +424,10 @@ function App() {
         ${room && html`<a class="icon-btn" href=${`/api/rooms/${room.id}/export`} title="Export chat" aria-label="Export chat"><${Icon} name="download" /></a>`}
       </header>
       ${room
-        ? html`<${Chat} key=${room.id} room=${room} agents=${meta.agents} offset=${offset} actions=${actions} />`
+        ? html`<div class="workspace">
+            <${Chat} key=${room.id} room=${room} agents=${meta.agents} offset=${offset} actions=${actions} />
+            ${site && html`<${Preview} room=${room} site=${site} ship=${meta.ship || {}} onShip=${actions.ship} />`}
+          </div>`
         : activeId
           ? null
           : html`<${Home} meta=${meta} onCreate=${actions.create} />`}

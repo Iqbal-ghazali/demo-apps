@@ -8,6 +8,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { callAgent } from './agents.js';
+import { latestSite, scrubEmails, AGENTS, SHIP_TAG, SHIP_REQUEST } from './prompts.js';
+import { ship, shipConfig } from './github.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
 const ROOM_DIR = path.join(DATA_DIR, 'rooms');
@@ -51,7 +53,7 @@ export class Room extends EventEmitter {
   }
 
   toJSON() {
-    return { ...this.data, busy: this.busy };
+    return { ...this.data, busy: this.busy, shipping: Boolean(this.shipping) };
   }
 
   summary() {
@@ -101,6 +103,41 @@ export class Room extends EventEmitter {
     this.drain();
   }
 
+  /** Commit the newest website and follow CI/CD. Runs only when the human presses Ship or asks for it in the chat. */
+  ship() {
+    if (this.busy) throw new Error('Wait for the agents to finish first.');
+    if (this.shipping) throw new Error('Already shipping.');
+    const cfg = shipConfig();
+    if (!cfg.enabled) throw new Error('Shipping is not set up: add GITHUB_TOKEN and GITHUB_REPO to .env (see README).');
+    const site = latestSite(this.data);
+    if (!site) throw new Error('No website yet. Ask Claude to build one first.');
+
+    const msg = { id: randomUUID(), role: 'ship', status: 'pending', version: site.version, repo: cfg.repo, startedAt: Date.now() };
+    this.data.messages.push(msg);
+    this.shipping = true;
+    this.log({ event: 'ship-start', version: site.version, repo: cfg.repo });
+    this.changed();
+
+    const author = AGENTS[site.by]?.name || 'the agents';
+    ship(site.html, `Agent Room: ship website v${site.version} (written by ${author}, reviewed in the room)`, (patch) => {
+      if (this.deleted) return;
+      Object.assign(msg, patch);
+      if (patch.done) {
+        msg.status = 'done';
+        msg.at = Date.now();
+        this.shipping = false;
+        this.log({ event: 'ship', ok: !patch.failed, summary: patch.summary, links: patch.links, url: patch.url });
+      }
+      this.changed();
+    });
+  }
+
+  /** True when the newest human message asks to push / ship / deploy. */
+  shipRequested() {
+    const human = this.data.messages.filter((m) => m.role === 'human').at(-1);
+    return Boolean(human && SHIP_REQUEST.test(human.text));
+  }
+
   async drain() {
     if (this.controller) return;
     while (this.queue.length) {
@@ -131,7 +168,19 @@ export class Room extends EventEmitter {
       msg.durationMs = result.durationMs;
       delete msg.startedAt;
       if (result.ok) {
-        Object.assign(msg, { status: 'done', text: result.text, model: result.model, at: Date.now() });
+        const shipAsked = result.text.includes(SHIP_TAG);
+        const text = scrubEmails(result.text.replaceAll(SHIP_TAG, ''), this.data).trim();
+        Object.assign(msg, { status: 'done', text, model: result.model, at: Date.now() });
+        if (shipAsked && this.shipRequested()) {
+          // The human asked to ship and Claude confirmed: the room ships now and skips Codex's turn.
+          this.queue = [];
+          this.changed();
+          try {
+            this.ship();
+          } catch (err) {
+            this.data.messages.push({ id: randomUUID(), role: 'ship', status: 'done', failed: true, summary: err.message, version: latestSite(this.data)?.version ?? '?', repo: shipConfig().repo || 'GitHub', at: Date.now() });
+          }
+        }
       } else if (result.raw?.aborted) {
         Object.assign(msg, { status: 'stopped', at: Date.now() });
         this.queue = [];
@@ -148,7 +197,9 @@ export class Room extends EventEmitter {
     const name = { human: 'Human', claude: 'Claude', codex: 'Codex' };
     const lines = [`# ${this.data.title}`, '', `Agent Room export · ${new Date().toISOString()}`, ''];
     for (const m of this.data.messages) {
-      if (m.status === 'done') {
+      if (m.role === 'ship') {
+        lines.push(`_${m.summary || m.error || 'Shipping…'}_`, '');
+      } else if (m.status === 'done') {
         const meta = m.role === 'human' ? '' : ` _(${m.model || 'model unknown'}, ${(m.durationMs / 1000).toFixed(1)}s)_`;
         lines.push(`**${name[m.role]}**${meta}`, '', m.text, '');
       } else if (m.status === 'error') {

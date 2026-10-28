@@ -49,6 +49,7 @@ COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json server.js ./
 COPY --chown=node:node src ./src
 COPY --chown=node:node public ./public
+COPY --chown=node:node ship-template ./ship-template
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN mkdir -p /home/node/.codex /app/data && chown -R node:node /home/node/.codex /app/data
