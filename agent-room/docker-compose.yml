@@ -1,0 +1,29 @@
+name: agent-room
+
+services:
+  agent-room:
+    build: .
+    image: ${AGENT_ROOM_IMAGE:-agent-room:local}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "3000" # inside the container; change the host side with AGENT_ROOM_PORT
+    ports:
+      # localhost only: nobody else on your network can use the room (or your accounts)
+      - "127.0.0.1:${AGENT_ROOM_PORT:-3000}:3000"
+    volumes:
+      - codex-home:/home/node/.codex # Codex sign-in survives restarts
+      - data:/app/data # rooms (sessions) + raw record of every agent call
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/node:uid=1000,gid=1000,mode=0700
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    init: false # tini is already the entrypoint
+
+volumes:
+  codex-home:
+  data:

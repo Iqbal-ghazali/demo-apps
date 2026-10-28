@@ -1,0 +1,24 @@
+{
+  "name": "agent-room",
+  "version": "0.1.0",
+  "description": "One shared conversation where a human brainstorms with Claude and Codex.",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "check": "node --env-file-if-exists=.env server.js --check",
+    "icons": "node scripts/build-icons.js"
+  },
+  "dependencies": {
+    "dompurify": "3.4.17",
+    "htm": "3.1.1",
+    "marked": "18.1.2"
+  },
+  "devDependencies": {
+    "lucide-static": "1.62.0"
+  }
+}
